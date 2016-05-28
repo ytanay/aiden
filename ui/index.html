@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <title>AIDEN Client</title>
+    <link href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.6/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-1q8mTJOASx8j1Au+a5WDVnPi2lkFfwwEAa8hDDdjZlpLegxhjVME1fgjWPGmkzs7" crossorigin="anonymous">
+    <link href="styles/main.css" rel="stylesheet">
+  </head>
+  <body>
+    <div class="site-wrapper">
+      <div class="site-wrapper-inner">
+        <div class="cover-container">
+          <div class="masthead clearfix" style="-webkit-app-region: drag">
+            <div class="inner">
+              <h3 class="masthead-brand">AIDEN: <small>Automated Information Distributer for Encrypted Networks</small></h3>
+            </div>
+          </div>
+
+          <div class="inner cover">
+            <h1 class="cover-heading text-primary" id="title">Hello.</h1>
+            <p class="lead" id="help-text">AIDEN is a peer-to-peer network security solution. To start, choose a directory server and fallback encryption type!</p>
+            <p class="lead">
+              <form class="form-group" id="init">
+                <div class="form-group">
+                  <label for="directory-server">Directory Server</label>
+                  <input type="text" class="form-control" id="directory-server" value="aiden-directory.herokuapp.com">
+                </div>
+                <div class="form-group">
+                  <label for="encryption">Fallback Encryption</label>
+                  <select class="form-control" id="encryption-type">
+                    <option value="512" selected>RSA 512 bit</option>
+                    <option value="1024">RSA 1024 bit</option>
+                    <option value="2048">RSA 2048 bit</option>
+                    <option value="4096">RSA 4096 bit</option>
+                  </select>
+                  <span class="help-block">Higher bit-counts slow down the network but marginally improve security.</span>
+                </div>
+                <button href="#" class="btn btn-lg btn-primary ribbon" id="init-AIDEN">Start ERAN-ing!</button>
+              </form>
+              <div id="main" style="display: none">
+                <div id="charts"></div>
+                <div class="row">
+                  <button href="#" class="btn btn-lg btn-danger ribbon" id="disconnect">Disconnect</button>
+                </div>
+                <div class="row">
+                  <a class="btn btn-link hidden" role="button" data-toggle="collapse" href="#collapseExample" aria-expanded="false" aria-controls="collapseExample">
+                    Expert?
+                  </a>
+
+                  <div class="collapse" id="collapseExample">
+                    <div class="well">
+                      Open a TCP tunnel to localhost:3000 and issue AIDEN commands as described in the protocol.
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </p>
+          </div>
+
+          <div class="mastfoot">
+            <div class="inner">
+              <p>Designed and built by Yotam Tanay. &copy; 2016, MIT-licensed.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+    <script src="interface.js"
+    <script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.6/js/bootstrap.min.js"></script>
+</html>

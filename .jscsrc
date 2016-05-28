@@ -1,0 +1,11 @@
+{
+    "requireSpacesInAnonymousFunctionExpression": null,
+    "requireSpaceBeforeBlockStatements": null,
+    "requireTrailingComma": null,
+    "validateLineBreaks": "CRLF",
+    "requireSpaceAfterKeywords": null,
+    "requireSpacesInsideObjectBrackets": null,
+    "safeContextKeyword": "self",
+    "requireDollarBeforejQueryAssignment": null,
+    "requireCamelCaseOrUpperCaseIdentifiers": null
+}
