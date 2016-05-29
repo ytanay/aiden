@@ -39,7 +39,7 @@ var AIDEN = module.exports = {
           return console.error(err);
         }
 
-        Mapper.update(response.nodes); // Load the list of nodes into the mapper
+        Mapper.update(response.nodes, response.secondaries); // Load the list of nodes into the mapper
         console.log('Starting update interval kickoff');
         AIDEN.update();
         if(!process.env.AIDEN_SUPRESS){
@@ -74,7 +74,7 @@ var AIDEN = module.exports = {
       setTimeout(AIDEN.update, CONFIG.DIRECTORY_UPDATE_INTERVAL);
       if(err)
         return console.error('AIDEN.update: could not fetch node list', err)
-      Mapper.update(response.nodes);
+      Mapper.update(response.nodes, response.secondaries);
 
     })
   }

@@ -37,9 +37,11 @@ var NodeCommunicator = net.createServer(function(upstream){
 
     if(passthroughNormal) // If we are in normal piping mode, write the data block and return
       return downstream.write(data);
-    if(passthroughManual) // If we are in manual piping mode, decrpyt the last stage block, write it, and return
+    if(passthroughManual){ // If we are in manual piping mode, decrpyt the last stage block, write it, and return
+      console.warn('manual piping', data.length);
       return downstream.write(Security.decrypt(data.toString()));
 
+    }
     var request;
 
     try {
@@ -89,30 +91,36 @@ var NodeCommunicator = net.createServer(function(upstream){
     return downstream.connect(+target[1], target[0], function(){ // If this is the last hop, connect to the stated target
 
       if(request.method === 'TUNNEL:HTTPS'){ // HTTPS is the simplest - set this node to normal piping and return an HTTP Tunnel success message
-        console.log('connected to target', Protocol.MESSAGES.HTTPS_TUNNEL_SUCCESS)
         upstream.write(Protocol.MESSAGES.HTTPS_TUNNEL_SUCCESS); // Ready to start TLS handshake
         passthroughNormal = true; // Enable normal piping
+        return downstream.pipe(upstream); // Pipe from the downstream socket into our upstream streams
       }
 
       else if(request.method === 'TUNNEL:EXIT'){
-        console.error('exit connected', target)
+        console.error('exit connected', target);
         upstream.write(Protocol.MESSAGES.WRAPPED_TUNNEL_SUCCESS);
         passthroughManual = true;
+        //console.log('getting key for', request.requester);
+        originatorKey = Mapper.getSecondary(request.requester)
+        return downstream.on('data', function(chunk){
+          var encryptedChunk = Security.encrypt(originatorKey, chunk.toString());
+          console.log('encrypting target chunk %s=>%s', chunk.length, encryptedChunk.length);
+          upstream.write(encryptedChunk + '\r\n');
+        });
       }
 
       else { // If the request is not secure, we currently have a downstream socket to a node, not the destination server
-        console.error('generating exit')
         downstream.write(Security.encrypt(target[2], Protocol.header({ // We'll write a passthrough request to it.
           id: request.id,
           hops: 1,
           method: 'TUNNEL:EXIT',
           over: request.method,
-          target: request.target
+          target: request.target,
+          requester: request.requester
         })));
         passthroughNormal = true;
+        return downstream.pipe(upstream); // Pipe from the downstream socket into our upstream streams
       }
-
-      downstream.pipe(upstream); // Pipe from the downstream socket into our upstream streams
     });
   });
 });

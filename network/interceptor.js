@@ -25,6 +25,8 @@ var server = http.createServer(function(req, res){ // This segment handles HTTP 
       return;
     finishedParsing = true;
 
+    console.warn('http replay start')
+
     var rawHeaders = req.rawHeaders;
     var headers = '';
     for(var i = 0; i < rawHeaders.length; i += 2){
@@ -33,9 +35,35 @@ var server = http.createServer(function(req, res){ // This segment handles HTTP 
     var replay = `${req.method} ${urlParser.parse(req.url).path} HTTP/1.1\r\n${headers}\r\n\r\n`
 
     downstream.write(replay);
+    var buffer = '';
     downstream.socket.on('data', function(data){
-      req.socket.write(data);
+      data = data.toString();
+      if(data.indexOf('\r\n') === -1){
+        buffer += data;
+        return;
+      }
+      currentIndex = 0;
+      while(data.indexOf('\r\n') !== -1){ // While there are still new lines
+        req.socket.write(Security.decryptSecondary(buffer + data.substring(0, data.indexOf('\r\n'))))
+        buffer = '';
+        data = data.substring(data.indexOf('\r\n')+2);
+      }
+
+      buffer += data;
+      return;
+      var decryptedChunk = Security.decryptSecondary(data.toString());
+      console.log('decrypting target chunk %s=>%s', data.length, decryptedChunk.length);
+      req.socket.write(decryptedChunk);
     });
+    downstream.socket.on('close', function(){
+      console.log('http close')
+      res.end();
+    });
+
+    downstream.socket.on('error', function(){
+      console.log('http error')
+      res.end();
+    })
   });
 });
 
@@ -108,7 +136,8 @@ function handleRequest(method, request, upstream, head, callback){
         Protocol.header(exitNode ? {
           id, hops, method,
           target: encodeURIComponent(Security.encrypt(exitNode.key, actualTarget.hostname + ':' + actualTarget.port)),
-          exit: exitNode.id
+          exit: exitNode.id,
+          requester: CONFIG.ID
         } :  {
           id, hops, method,
           target: statedTarget.hostname + ':' + statedTarget.port
@@ -121,7 +150,6 @@ function handleRequest(method, request, upstream, head, callback){
 
     upstream.on('data', function(data){
       Interface.stat('bytes-upstream', data.length, 'append', 'bytes');
-      console.log('interceptor writing downwards')
       downstream.write(data); // Pipe the upstream data into the downstream socket
     });
 
@@ -129,7 +157,6 @@ function handleRequest(method, request, upstream, head, callback){
       Interface.stat('bytes-downstream', data.length, 'append', 'bytes');
       if(callback)
         return callback(data, downstream, exitNode)
-      console.log('interceptor returning data', data.toString())
       upstream.write(data); // And vice-versa
     });
 

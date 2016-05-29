@@ -15,11 +15,11 @@ var CONFIG = module.exports = {
   PORT: defaultPort,
   INTERCEPTOR_PORT: process.env.AIDEN_INTERCEPTOR_PORT || 6666,
 
-  DIRECTORY_URL: process.env.AIDEN_DIRECTORY_URL || 'AIDEN-directory.herokuapp.com',
+  DIRECTORY_URL: process.env.AIDEN_DIRECTORY_URL || 'aiden-directory.herokuapp.com',
   DIRECTORY_UPDATE_INTERVAL: process.env.AIDEN_DIRECTORY_UPDATE_INTERVAL || 5000,
 
   MAX_HOP_COUNT: process.env.AIDEN_MAX_HOP_COUNT || 3,
-  KEY_PAIR_ALGORITHM: process.env.AIDEN_KEY_PAIR_ALGORITHM || ['rsa', 512],
+  KEY_PAIR_ALGORITHM: process.env.AIDEN_KEY_PAIR_ALGORITHM || ['rsa', 1024],
 
   INTERFACE: {
     width: 870,
