@@ -2,7 +2,7 @@
   "name": "AIDEN",
   "productName": "AIDEN",
   "version": "0.4.1",
-  "description": "Automated Information Distributer for Encrypted Networks",
+  "description": "Automated Information Distribution for Encrypted Networks",
   "main": "index.js",
   "dependencies": {
     "async": "^1.5.2",

@@ -1,12 +1,12 @@
 /**
- * Creates and manages a local HTTP/HTTPS proxy
+ * Creates and manages a local HTTP/CONNECT proxy
  */
+
 var CONFIG = require('../config');
 
+var net = require('net');
 var http = require('http');
 var urlParser = require('url');
-var net = require('net');
-var request = require('request');
 var shortid = require('shortid');
 
 var Mapper = require('../lib/mapper');
@@ -14,88 +14,60 @@ var Directory = require('../lib/directory');
 var Security = require('../lib/security');
 var Protocol = require('../lib/protocol');
 var Interface = require('../ui');
+var Network = require('./index');
+var SecureSocket = require('./secure-socket');
 
-var server = http.createServer(function(req, res){ // This segment handles HTTP requests
-  var finishedParsing = false;
+var TLS_DEFAULT_PORT = '443';
+var HTTP_REQUEST_TERMINATOR = '\r\n\r\n';
+var CONNECT_METHOD_REGEX = /CONNECT .+ HTTP\/\d/i;
+var HOST_HEADER_REGEX = /Host: (.+)/i;
+var CONNECT_TUNNEL_SUCCESS = 'HTTP/1.1 200 Connection established (via AIDEN, CONNECT)\r\n\r\n'; // HTTPS
+var CONNECT_TUNNEL_FAILURE = 'HTTP/1.1 500 Connection error (via AIDEN, CONNECT)\r\n\r\n';
+var TUNNEL_CREATED = Protocol.MESSAGES.TUNNEL_CREATED.trim();
 
-  // @TODO add support for HTTP POST request bodies.
-  return handleRequest('TUNNEL:HTTP', req, res, null, (data, downstream) => {
+var server = http.createServer();
 
-    if(finishedParsing)
+server.on('connect', handleRequest.bind(null, 'TUNNEL:CONNECT')); // Handles CONNECT requests
+
+server.on('connection', function(upstream){ // Handles HTTP requests.
+  var requestBuffer = ''; // Store the original request in this buffer
+
+  var parseRequest = function(upstreamChunk){ // Gets called when the request data is piped into the socket
+    requestBuffer += upstreamChunk.toString(); // Append this chunk to the request buffer
+    
+    if(CONNECT_METHOD_REGEX.test(requestBuffer)) // If this is a CONNECT request, abort early - the CONNECT handler will resume handling asynchronously 
+      return upstream.removeListener('data', parseRequest); // Stop receiving data on this callback
+    
+    if(requestBuffer.indexOf(HTTP_REQUEST_TERMINATOR) === -1) // If the request has not terminated yet, continue buffering
       return;
-    finishedParsing = true;
 
-    console.warn('http replay start')
+    var url = HOST_HEADER_REGEX.exec(requestBuffer); // Fetch the host header
 
-    var rawHeaders = req.rawHeaders;
-    var headers = '';
-    for(var i = 0; i < rawHeaders.length; i += 2){
-      headers += `${rawHeaders[i]}: ${rawHeaders[i+1]}\r\n`
+    if(!url){ // If it is invalid, abort the request
+      upstream.write(CONNECT_TUNNEL_FAILURE);
+      return upstream.end();
     }
-    var replay = `${req.method} ${urlParser.parse(req.url).path} HTTP/1.1\r\n${headers}\r\n\r\n`
 
-    downstream.write(replay);
-    var buffer = '';
-    downstream.socket.on('data', function(data){
-      data = data.toString();
-      if(data.indexOf('\r\n') === -1){
-        buffer += data;
-        return;
-      }
-      currentIndex = 0;
-      while(data.indexOf('\r\n') !== -1){ // While there are still new lines
-        req.socket.write(Security.decryptSecondary(buffer + data.substring(0, data.indexOf('\r\n'))))
-        buffer = '';
-        data = data.substring(data.indexOf('\r\n')+2);
-      }
+    upstream.removeListener('data', parseRequest);
 
-      buffer += data;
-      return;
-      var decryptedChunk = Security.decryptSecondary(data.toString());
-      console.log('decrypting target chunk %s=>%s', data.length, decryptedChunk.length);
-      req.socket.write(decryptedChunk);
-    });
-    downstream.socket.on('close', function(){
-      console.log('http close')
-      res.end();
-    });
+    requestBuffer = requestBuffer // In order to maximize anonymity, do not allow the browser to reuse connections.
+      .replace(/Proxy-Connection: Keep-Alive/i, 'Connection: close')
+      .replace(/Connection: Keep-Alive/i, 'Connection: close');
 
-    downstream.socket.on('error', function(){
-      console.log('http error')
-      res.end();
-    })
+    handleRequest('TUNNEL:HTTP', {url: 'http://' + url[1]}, upstream, requestBuffer);
+  };
+
+
+  upstream.on('data', parseRequest);
+
+});
+
+exports.listen = function listen(){    // Listen on the interceptor port
+  server.listen(CONFIG.INTERCEPTOR_PORT).once('error', function(){
+    console.error('Looks like an interceptor is already running on this machine. Skipping bind and listen.');
   });
-});
-
-server.addListener('connect', handleRequest.bind(null, 'TUNNEL:HTTPS')); // Wrap HTTPS requests
-
-// Listen on the interceptor port
-server.listen(CONFIG.INTERCEPTOR_PORT).on('error', function(){
-  console.error('Looks like an interceptor is already running on this machine. Skipping bind and listen.');
-});
-
-function SecureSocket(socket, key){
-  this.socket = socket || new net.Socket;
-  this.key = key;
 }
 
-SecureSocket.prototype.setKey = function(key){
-  this.key = key;
-}
-
-SecureSocket.prototype.write = function(data, encoding, callback){
-  this.key ?
-    this.socket.write(Security.encrypt(this.key, data), encoding, callback) :
-    this.socket.write(data, encoding, callback);
-}
-
-SecureSocket.prototype.writeRaw = function(data){
-  this.socket.write(data);
-}
-
-SecureSocket.prototype.on = function(data){
-  this.socket.write(data);
-}
 
 /**
  * The brains behind the Interceptor lives here.
@@ -103,97 +75,90 @@ SecureSocket.prototype.on = function(data){
  * When a connect request comes through, we ask the mapper for a friend node
  * to begin the exchange, and open a socket pipe to it.
  */
-function handleRequest(method, request, upstream, head, callback){
+function handleRequest(method, request, upstream, requestBuffer, downstreamDataCallback){
 
   var id = shortid.generate(); // Generate an id for this request
   var statedTarget = parseURL(method, request.url); // The parsed URL breaks down the request URL into parts
-  var node = Mapper.select(); // First node in the chain
-  var nodeAddress = node.address; // Address of first node
-  var exitNode = null, actualTarget = null; // For insecure requests
-  var downstream = new SecureSocket(); // Socket to the first downstream proxy server
-  var downstreamSocket = downstream.socket;
-  var hops = CONFIG.MAX_HOP_COUNT;
-
-  if(method !== 'TUNNEL:HTTPS'){ // If the transmission is not inherently secure
-    exitNode = Mapper.select(); // Select an exit node
-    actualTarget = statedTarget;
-    statedTarget = exitNode.address;
+  var hops = Mapper.computeHops();
+  var exitNode = null, actualTarget = null, streamingStarted = false, streamingBuffer = ''; // For insecure requests
+  var downstream = new SecureSocket; // Socket to the first downstream proxy server
+  
+  if(statedTarget.port === TLS_DEFAULT_PORT){ // If we are certain the transmission is inherently secure
+    method = 'TUNNEL:SECURE';
+  } else {
+    exitNode = Mapper.select(Mapper.TRUSTED_NODE); // Select an exit node
+    actualTarget = statedTarget; // Set the actual target to the stated target
+    statedTarget = exitNode.address; // Set the stated target to the exit node
     hops--; // Our target is now the exit node, so we require one hop less.
-    downstream.setKey(exitNode.key);
+    downstream.setBodyKey(exitNode.key);
   }
 
-  socketSetup(upstream, downstreamSocket); // Binds error and close events for both sockets
+  var tunnelReady = function(chunk){
+    if(chunk.toString().trim() !== TUNNEL_CREATED){ // Check if the tunnel has connected successfully
+      console.warn('CONNECT TUNNEL FAILURE', chunk.toString().trim()); // If it hasn't send an error message
+      upstream.write(CONNECT_TUNNEL_FAILURE);
+      upstream.end();
+      downstream.end();
+    }
+
+    if(method === 'TUNNEL:SECURE'){ // If the tunnel is secure, return a CONNECT success message and handle normally
+      upstream.write(CONNECT_TUNNEL_SUCCESS)
+      downstream.pipe(upstream);
+      upstream.pipe(downstream.socket);
+    } else {
+      downstream.on('data', tunnelDecrypt); // Otherwise, decrypt each incoming data block before returning.
+      if(requestBuffer) downstream.write(requestBuffer);
+      if(method !== 'TUNNEL:HTTP') upstream.write(CONNECT_TUNNEL_SUCCESS);
+    }
+
+  }
+
+  var tunnelDecrypt = function(chunk){
+    streamingBuffer += chunk.toString();
+        
+    while(streamingBuffer.indexOf('\n') !== -1){ // If there are still newlines in the buffer
+      var encryptedPartition = streamingBuffer.substring(0, streamingBuffer.indexOf('\n')) // Get everything until the partition delimiter
+      streamingBuffer = streamingBuffer.substring(streamingBuffer.indexOf('\n') + 1); // Seek the buffer ahead to right after partition delimiter
+      var decryptedChunk = Buffer.from(Security.decryptSecondary(encryptedPartition), 'base64'); // Decrypt everything in the buffer up to the terminator
+      console.log('decryptedPartition size', decryptedChunk.length)
+      upstream.write(decryptedChunk)
+    }
+  };
+
+  downstream.once('data', tunnelReady);
 
   console.log('Interceptor: caught request. id=%s, method=%s, target=%s:%s', id, method, (actualTarget || statedTarget).hostname, (actualTarget || statedTarget).port);
   Interface.stat('intercepted-requests', 1, 'append');
-  Directory.report('request start', nodeAddress, actualTarget || statedTarget, hops, id);
 
-  downstreamSocket.connect(+nodeAddress.port, nodeAddress.hostname, function(){
+  var header = exitNode ? 
+    { // Object for requests with exit node
+      id, hops, method,
+      target: encodeURIComponent(Security.encrypt(exitNode.key, actualTarget.hostname + ':' + actualTarget.port)),
+      exit: exitNode.id,
+      requester: CONFIG.ID
+    } : { // Object for inherently secure requests
+      id, hops, method,
+      target: statedTarget.hostname + ':' + statedTarget.port
+    }
+  ;
+  
+  Network.connectToNextNode(header, upstream, downstream, true);
 
-    downstream.writeRaw( // Write the request headder, skipping exit node encryption
-      Security.encrypt(
-        node.key,
-        Protocol.header(exitNode ? {
-          id, hops, method,
-          target: encodeURIComponent(Security.encrypt(exitNode.key, actualTarget.hostname + ':' + actualTarget.port)),
-          exit: exitNode.id,
-          requester: CONFIG.ID
-        } :  {
-          id, hops, method,
-          target: statedTarget.hostname + ':' + statedTarget.port
-        })
-      )
-    );
-
-    if(head)
-      downstream.write(head); // Flush the buffer (first packet of the tunneling stream, see Node:HTTP:Server:connect) into the downstream socket
-
-    upstream.on('data', function(data){
-      Interface.stat('bytes-upstream', data.length, 'append', 'bytes');
-      downstream.write(data); // Pipe the upstream data into the downstream socket
-    });
-
-    downstreamSocket.on('data', function(data){
-      Interface.stat('bytes-downstream', data.length, 'append', 'bytes');
-      if(callback)
-        return callback(data, downstream, exitNode)
-      upstream.write(data); // And vice-versa
-    });
-
-  });
 }
 
+/**
+ * Returns an object describing a url in the context of a request object
+ * @param  {String} protocol 
+ * @param  {String} url      
+ * @return {Object}          URL description
+ */
 function parseURL(protocol, url){
   if(protocol === 'TUNNEL:HTTP'){
     var parsedURL = urlParser.parse(url);
     parsedURL.port = parsedURL.port || 80;
     return parsedURL;
-  } else if(protocol === 'TUNNEL:HTTPS'){
+  } else if(protocol === 'TUNNEL:CONNECT'){
     return urlParser.parse('https://' + url);
   }
   throw new TypeError('unrecognized protocol ' + protocol);
 }
-
-function socketSetup(upstream, downstream){
-
-  // Upstream socket setup
-  upstream.on('end', function(){
-    downstream.end();
-  });
-
-  downstream.on('end', function(){
-    upstream.end();
-  });
-
-
-  upstream.on('error', function(){
-    console.log('Interceptor: upstream error');
-    downstream.end();
-  });
-
-  downstream.on('error', function(){
-    console.log('Interceptor: downstream error');
-    upstream.write(Protocol.MESSAGES.HTTPS_TUNNEL_FAILURE); // Report error to source application
-    upstream.end();
-  });
-};

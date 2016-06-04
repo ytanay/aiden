@@ -4,7 +4,7 @@
 
   var CONFIG = require('../config');
 
-if(!process.env.AIDEN_SUPRESS){ // If this is a CLI node, skip the interface
+if(!process.env.AIDEN_SUPRESS_UI){ // If this is a CLI node, skip the interface
   var electron = require('electron');
 
   var app = electron.app;

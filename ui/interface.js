@@ -1,3 +1,7 @@
+/**
+ * Electron-side UI handling mechanism
+ * @todo  document
+ */
 var $ = window.$ = window.jQuery = require('./vendor/jquery');
 var sparkline = require('./vendor/jquery.sparkline.min');
 var _ = require('lodash');
@@ -8,6 +12,7 @@ var charts = [
   ['intercepted-requests', 'carried-requests', 'known-nodes'],
   ['bytes-downstream', 'bytes-upstream', 'transit-rate']
 ];
+
 var chartsFlat = _.flatten(charts);
 var formatters = {
    bytes: function (bytes,decimals) {
@@ -30,6 +35,12 @@ ipc.on('function-call', function(event, data){
 
 $('#init-AIDEN').click(function(e){
   e.preventDefault();
+
+  $('#init').fadeOut('slow', function(){
+        $('#title').html('Intitializing...');
+  $('#help-text').html('Generating RSA keys and registering on the directory, this might take a moment.');
+
+  });
   ipc.send('init', {
     DIRECTORY_URL: $('#directory-server').val(),
     KEY_PAIR_ALGORITHM: ['rsa', parseInt($('#encryption-type').val(), 10)]
@@ -41,12 +52,12 @@ $('#disconnect').click(function(){
 });
 
 function initializeInterface(config){
-  $('#init').fadeOut(function(){
-    $('#title').html('All right!');
-    $('#help-text').html('Configure any application to use HTTP/S proxy <kbd>localhost:' + config.INTERCEPTOR_PORT + '</kbd> for enhanced security.');
-    $('#main').fadeIn();
-    createCharts();
-  });
+
+  $('#title').html('All right!');
+  $('#help-text').html('Configure any application to use HTTP/S proxy <kbd>localhost:' + config.INTERCEPTOR_PORT + '</kbd> for enhanced security.');
+  $('#main').fadeIn();
+  createCharts();
+
 }
 
 function updateStats(_stats){

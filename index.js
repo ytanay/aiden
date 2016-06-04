@@ -1,17 +1,20 @@
 /**
- * AIDEN: Automated Information Distributer for Encrypted Networks
+ * AIDEN: Automated Information Distribution for Encrypted Networks
  */
 
  if(process.argv[process.argv.length-1] === '--supress')  // Test for CLI option to supress the UI and interceptor
-   process.env.AIDEN_SUPRESS = true;
+   process.env.AIDEN_SUPRESS_UI = true;
 
 var _ = require('lodash');
 
 var Directory = require('./lib/directory');
 var Mapper = require('./lib/mapper');
 var Network = require('./network');
+var Interceptor = require('./network/interceptor'); // Initialize the interceptor if needed
 var Interface = require('./ui');
+
 var CONFIG = require('./config');
+
 
 var STARTED = false;
 
@@ -40,12 +43,14 @@ var AIDEN = module.exports = {
         }
 
         Mapper.update(response.nodes, response.secondaries); // Load the list of nodes into the mapper
-        console.log('Starting update interval kickoff');
+        
         AIDEN.update();
-        if(!process.env.AIDEN_SUPRESS){
-          require('./network/interceptor'); // Initialize the interceptor if needed
-        }
-        Interface.ready();
+        setTimeout(function finalSetup(){
+          Interceptor.listen();
+          Interface.ready();
+          console.log('Ready!');
+        }, CONFIG.DIRECTORY_UPDATE_INTERVAL)  
+        ;
       });
     });
   },
@@ -55,12 +60,11 @@ var AIDEN = module.exports = {
    * @async
    */
   listen: function(ready){
-    Network.listen(CONFIG.PORT).on('error', function(){
+    Network.server.listen(CONFIG.PORT).on('error', function(){
       CONFIG.PORT++;
-      CONFIG.PUBLIC_KEY = 'KEY_FROM_' + CONFIG.PORT;
       console.warn('Port taken, moving up');
-      Network.listen(CONFIG.PORT)
-    }).on('listening', function(){
+      Network.server.listen(CONFIG.PORT)
+    }).once('listening', function(){
       console.info('AIDEN.listen: bound to %s', CONFIG.PORT);
       ready();
     });
@@ -83,5 +87,5 @@ var AIDEN = module.exports = {
 
 require('./vendor/clim.js')(console, true); // Setup CLIM (improved console coloring)
 
-if(process.env.AIDEN_SUPRESS)
+if(process.env.AIDEN_SUPRESS_UI)
    AIDEN.init();
