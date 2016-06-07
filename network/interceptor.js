@@ -1,5 +1,6 @@
 /**
  * Creates and manages a local HTTP/CONNECT proxy
+ * @module network/interceptor
  */
 
 var CONFIG = require('../config');
@@ -17,12 +18,12 @@ var Interface = require('../ui');
 var Network = require('./index');
 var SecureSocket = require('./secure-socket');
 
-var TLS_DEFAULT_PORT = '443';
+var SECURE_PORTS = ['443', '22'];
 var HTTP_REQUEST_TERMINATOR = '\r\n\r\n';
 var CONNECT_METHOD_REGEX = /CONNECT .+ HTTP\/\d/i;
 var HOST_HEADER_REGEX = /Host: (.+)/i;
-var CONNECT_TUNNEL_SUCCESS = 'HTTP/1.1 200 Connection established (via AIDEN, CONNECT)\r\n\r\n'; // HTTPS
-var CONNECT_TUNNEL_FAILURE = 'HTTP/1.1 500 Connection error (via AIDEN, CONNECT)\r\n\r\n';
+var CONNECT_TUNNEL_SUCCESS = 'HTTP/1.1 200 Connection established\r\nProxy-Agent: AIDEN (CONNECT mode)\r\n\r\n';
+var CONNECT_TUNNEL_FAILURE = 'HTTP/1.1 500 Connection error\r\nProxy-Agent: AIDEN (CONNECT mode)\r\n\r\n';
 var TUNNEL_CREATED = Protocol.MESSAGES.TUNNEL_CREATED.trim();
 
 var server = http.createServer();
@@ -82,8 +83,8 @@ function handleRequest(method, request, upstream, requestBuffer, downstreamDataC
   var hops = Mapper.computeHops();
   var exitNode = null, actualTarget = null, streamingStarted = false, streamingBuffer = ''; // For insecure requests
   var downstream = new SecureSocket; // Socket to the first downstream proxy server
-  
-  if(statedTarget.port === TLS_DEFAULT_PORT){ // If we are certain the transmission is inherently secure
+
+  if(SECURE_PORTS.indexOf(statedTarget.port) !== -1){ // If we are certain the transmission is inherently secure
     method = 'TUNNEL:SECURE';
   } else {
     exitNode = Mapper.select(Mapper.TRUSTED_NODE); // Select an exit node
@@ -103,24 +104,27 @@ function handleRequest(method, request, upstream, requestBuffer, downstreamDataC
 
     if(method === 'TUNNEL:SECURE'){ // If the tunnel is secure, return a CONNECT success message and handle normally
       upstream.write(CONNECT_TUNNEL_SUCCESS)
-      downstream.pipe(upstream);
-      upstream.pipe(downstream.socket);
+      pipeMeasure(downstream, upstream.write.bind(upstream), 'bytes-downstream');
+      pipeMeasure(upstream, downstream.socket.write.bind(downstream.socket), 'bytes-upstream');
     } else {
-      downstream.on('data', tunnelDecrypt); // Otherwise, decrypt each incoming data block before returning.
-      if(requestBuffer) downstream.write(requestBuffer);
-      if(method !== 'TUNNEL:HTTP') upstream.write(CONNECT_TUNNEL_SUCCESS);
+      downstream.on('data', tunnelDecrypt); // Otherwise, decrypt each incoming data block before sending upstream.
+      if(requestBuffer) downstream.writeSafe(new Buffer(requestBuffer));
+      if(method !== 'TUNNEL:HTTP'){
+        upstream.write(CONNECT_TUNNEL_SUCCESS);
+        pipeMeasure(upstream, downstream.writeSafe.bind(downstream), 'bytes-upstream');
+      }
     }
 
   }
 
   var tunnelDecrypt = function(chunk){
     streamingBuffer += chunk.toString();
-        
+    Interface.stat('bytes-downstream', chunk.length, 'append', 'bytes');
     while(streamingBuffer.indexOf('\n') !== -1){ // If there are still newlines in the buffer
       var encryptedPartition = streamingBuffer.substring(0, streamingBuffer.indexOf('\n')) // Get everything until the partition delimiter
       streamingBuffer = streamingBuffer.substring(streamingBuffer.indexOf('\n') + 1); // Seek the buffer ahead to right after partition delimiter
       var decryptedChunk = Buffer.from(Security.decryptSecondary(encryptedPartition), 'base64'); // Decrypt everything in the buffer up to the terminator
-      console.log('decryptedPartition size', decryptedChunk.length)
+      //console.warn('up (%s)', actualTarget.port, decryptedChunk.length, decryptedChunk.toString())
       upstream.write(decryptedChunk)
     }
   };
@@ -130,6 +134,8 @@ function handleRequest(method, request, upstream, requestBuffer, downstreamDataC
   console.log('Interceptor: caught request. id=%s, method=%s, target=%s:%s', id, method, (actualTarget || statedTarget).hostname, (actualTarget || statedTarget).port);
   Interface.stat('intercepted-requests', 1, 'append');
 
+  upstream.setNoDelay(true);
+  downstream.socket.setNoDelay(true);
   var header = exitNode ? 
     { // Object for requests with exit node
       id, hops, method,
@@ -161,4 +167,13 @@ function parseURL(protocol, url){
     return urlParser.parse('https://' + url);
   }
   throw new TypeError('unrecognized protocol ' + protocol);
+}
+
+
+function pipeMeasure(source, destinationWrite, name){
+  source.on('data', function(chunk){
+    Interface.stat(name, chunk.length, 'append', 'bytes');
+    //console.warn('in (%s) <- %s', chunk.length, chunk.toString())
+    destinationWrite(chunk);
+  });
 }

@@ -9,7 +9,7 @@ var defaultPort = process.env.PORT || 3000;
 
 var CONFIG = module.exports = {
 
-  VERSION: require('../package.json').version,
+  VERSION: require('../package.json').version, // Read the current version from the package file
   DEBUG_MODE: process.env.AIDEN_DEBUG_MODE || false,
   LIMITED_NETWORK: process.env.AIDEN_LIMITED_NETWORK || true,
   TRUST_ALL_NODES: process.env.AIDEN_TRUST_ALL_NODES || true,
@@ -42,6 +42,10 @@ var CONFIG = module.exports = {
   INTERFACE_UPDATE_INTERVAL: 2000,
   INTERFACE_STAT_HISTORY: 17,
 
+  /**
+   * Merges a partial configuration object with the defaults here
+   * @param  {Object} newConfig partial configuration (e.g. from UI)
+   */
   finalize(newConfig){
     _.assign(CONFIG, newConfig);
     CONFIG.DIRECTORY_URL = 'https://' + CONFIG.DIRECTORY_URL;

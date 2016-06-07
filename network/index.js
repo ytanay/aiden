@@ -1,5 +1,6 @@
 /**
  * Socket communication routines with friend nodes
+ * @module network/index
  */
 
 var net = require('net');
@@ -42,14 +43,14 @@ function parseTarget(request){
 
 /**
  * If there additional hops remaining, tunnel into an additional node and bridge the sockets
- * @param  {Object}         request            to handle
+ * @param  {Object}         request     to handle
  * @param  {Socket}         upstream           
  * @param  {SecureSocket}   downstream         
- * @param  {Boolean}        disablePassthrough should this node pipe downstream messages into the upstream socket implicitly?
- * @param  {Function}       done               optional; callback on bridging completion
+ * @param  {Boolean}        isInitial   is this the first node in the chain?
+ * @param  {Function}       done        optional; callback on bridging completion
 
  */
-function connectToNextNode(request, upstream, downstream, disablePassthrough, done){
+function connectToNextNode(request, upstream, downstream, isInitial, done){
   var node = Mapper.select();
   var host = node.address;
 
@@ -65,15 +66,24 @@ function connectToNextNode(request, upstream, downstream, disablePassthrough, do
   downstream.connect(+host.port, host.hostname, function(){
     // Successful connection to next node
     
-    downstream.removeListener('error', boundConnectionError); // Remove the temporary event listener
+    // Remove the temporary event listener
+    downstream.removeListener('error', boundConnectionError); 
     downstream.on('error', function(err){
       console.log('downstream encountered error in transit', err)
     });
 
     downstream.writeTransient(Protocol.header(request));
     
-    if(!disablePassthrough)
+    if(isInitial){
+      // If this is the intial request, report it
+      reportTransfer('request start', request, host); 
+    }else{
+      // Otherwise, report a carry
+      reportTransfer('carry', request, host);
+       // And pipe the streams
       downstream.pipe(upstream);
+    }
+    
 
     if(done) return done();
   });
@@ -103,17 +113,50 @@ function _immediateAbort(upstream, downstream, cause, err, request){
   }
 }
 
+/**
+ * Reports a transfer to the directory servicde
+ * @param  {String} type            one of 'request', 'carry', 'exit'
+ * @param  {Object} request         descriptor
+ * @param  {Object} nextNodeAddress address of next node in the chain
+ */
+function reportTransfer(type, request, nextNodeAddress){
+  // Report the request to the directory
+  Directory.report(type, { 
+    next: nextNodeAddress && nextNodeAddress.hostname ? '[' + nextNodeAddress.hostname + ']:' + nextNodeAddress.port : 'Final Carry',
+    target: request.target || 'Encrypted in transit',
+    requester: request.requester || 'Unknown',
+    hops: request.hops,
+    increment: 'requests',
+    id: request.id
+  });
+}
+
 
 var NodeCommunicator = net.createServer(function(upstream){ // Runs whenever a node establishes a connection
 
-  var passthroughNormal = false; // Have we plugged in the upstream <-> downstream sockets yet?
-  var passthroughManual = false; // Does this socket require manual last-stage decryption? (e.g. HTTP/Arbitrary TCP)
-  var downstream = new SecureSocket; // Eagerly create next stage downstream socket
-  var immediateAbort = _immediateAbort.bind(null, upstream, downstream); // Bind the immediate abort routine with this request's sockets
+  // Have we plugged in the upstream <-> downstream sockets yet?
+  var passthroughNormal = false; 
+  // Does this socket require manual last-stage decryption? (e.g. HTTP/Arbitrary TCP)
+  var passthroughManual = false; 
+   // Eagerly create next stage downstream socket
+  var downstream = new SecureSocket;
+  // Bind the immediate abort routine with this request's sockets
+  var immediateAbort = _immediateAbort.bind(null, upstream, downstream); 
+
+  upstream.setNoDelay(true);
+  downstream.socket.setNoDelay(true);
 
   upstream.on('error', function(err){
     console.error('upstream encountered an error', err);
     downstream.end();
+  });
+
+  upstream.on('end', function(){
+    downstream.end();
+  });
+
+  downstream.on('end', function(){
+    upstream.end();
   });
 
   upstream.on('data', function(data){
@@ -123,7 +166,10 @@ var NodeCommunicator = net.createServer(function(upstream){ // Runs whenever a n
 
     if(passthroughManual){ // If we are in manual piping mode, decrypt the last stage block, write it, and return
       try {
-        downstream.write(Security.decrypt(data.toString()));
+        encryptedPartition = data.toString();
+        var decryptedChunk = Buffer.from(Security.decrypt(encryptedPartition), 'base64');
+        //console.warn('out (%s) -> ', decryptedChunk.length, decryptedChunk.toString());
+        downstream.write(decryptedChunk);
       } catch(error){
         immediateAbort('UPSTREAM_MESSAGE_INTEGRITY_FAILURE', error, request);
       }
@@ -152,10 +198,10 @@ var NodeCommunicator = net.createServer(function(upstream){ // Runs whenever a n
       return connectToNextNode(request, upstream, downstream);
     }
 
-    //Otherwise, perform last stage handling
+    // Otherwise, perform last stage handling
     
     var target = parseTarget(request);
-    console.info('Proxy: last node. id=%s method=%s target=%s exit=%s', request.id, request.method, request.target, request.exit);
+    console.info('Proxy: last node. id=%s method=%s target=%s:%s exit=%s', request.id, request.method, target[0], target[1], request.exit);
 
     if(!target) // If the target is invalid, abort
       return immediateAbort('UPSTREAM_INVALID_TARGET', null, request);
@@ -168,14 +214,16 @@ var NodeCommunicator = net.createServer(function(upstream){ // Runs whenever a n
     downstream.connect(+target[1], target[0], function(){ // Connect to the stated target
 
       if(request.method === 'TUNNEL:SECURE'){ // Sets this node to normal piping and write a CONNECT Tunnel success message
+        reportTransfer('carry', request); // For secure requests, this node serves as a simple carry.
         upstream.write(Protocol.MESSAGES.TUNNEL_CREATED); // Ready to start TLS handshake
         passthroughNormal = true; // Enable normal piping
         return downstream.pipe(upstream); // Pipe from the downstream socket into our upstream streams
       }
 
       if(request.method === 'TUNNEL:EXIT'){ // If this is the exit node, we are connect to the actual target
+        reportTransfer('exit', request);
         upstream.write(Protocol.MESSAGES.TUNNEL_CREATED); // Ready start replay
-        passthroughManual = true; // Enable manual piping (+upstream decryption)
+        passthroughManual = true; // Enable manual piping (upstream + decryption)
         originatorKey = Mapper.getSecondary(request.requester); // Fetch the originator's secondary public key
         return downstream.on('data', function(chunk){
           var encryptedChunk = Security.encrypt(originatorKey, chunk.toString('base64'));
@@ -183,7 +231,8 @@ var NodeCommunicator = net.createServer(function(upstream){ // Runs whenever a n
         });
       }
 
-    // If the request is not secure, we currently have a downstream socket to a node, not the destination server
+      // If the request is not secure, we currently have a downstream socket to a node, not the destination server
+      reportTransfer('carry', request, {hostname: target[0], port: target[1]});
       downstream.write(Security.encrypt(target[2], Protocol.header({ // Write an exit request to it.
         id: request.id,
         hops: 1,

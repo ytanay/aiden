@@ -66,6 +66,12 @@ SecureSocket.prototype.writeRaw = function(data, encoding, callback){
   this.socket.write(data, encoding, callback);
 }
 
+SecureSocket.prototype.writeSafe = function(data){
+  this.key ?
+    this.socket.write(Security.encrypt(this.key, data.toString('base64'))) :
+    this.socket.write(data);
+}
+
 /**
  * Methods below are proxies for the standard Node Socket object and its EventEmitter interface
  * @see Net:Socket and EventEmitter
