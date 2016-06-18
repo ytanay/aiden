@@ -26,7 +26,7 @@ module.exports = {
     var interfaces = os.networkInterfaces(); // Get a list of all network interfaces on this machine
     
     if(interfaces['Ethernet']) // In our lab demo, we use the Ethernet interface if it exists
-      return done(null, getInterfaceIP(interfaces['Ethernet']));
+      return done(null, getInterfaceIP(interfaces['Ethernet']), os.hostname());
     
     var keys = Object.keys(interfaces).filter(function(interfaceName){ // Get all interfaces named "Local Area Connection *"
       return interfaceName.indexOf('Local Area Connection') === 0;
@@ -35,7 +35,7 @@ module.exports = {
     if(!keys.length || !keys[0].length) // If we don't have a Local Area Connection or it is missing an external interface
       return done(new Error('Could not find local IP address'));
 
-    return done(null, getInterfaceIP(interfaces[keys[0]])) // Assume the first local area interface is publicly reachable.
+    return done(null, getInterfaceIP(interfaces[keys[0]]), os.hostname()) // Assume the first local area interface is publicly reachable.
 
   }
   
